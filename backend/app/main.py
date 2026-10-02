@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app import seed
 from app.db import connect
-from app.engines.rota import build_week_slots, swap_legal, apply_swap
+from app.engines.rota import build_week_slots, swap_legal, apply_swap, find_slot
+from app.modules.swap_revoke import revoke_swap, RevokeError
+from app.modules.swap_list import list_swaps, get_swap_detail
 
 app = FastAPI(title="Chorerota", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -91,8 +93,15 @@ def request_swap(week_id: int, body: SwapBody):
     return {"id": sid, "status": "pending", **check}
 
 @app.get("/api/swaps")
-def list_swaps():
-    c = connect(); rows = [dict(r) for r in c.execute("SELECT * FROM swap_requests ORDER BY id DESC")]; c.close(); return rows
+def list_swaps_api(include_revoked: bool = False):
+    c = connect(); rows = list_swaps(c, include_revoked=include_revoked); c.close(); return rows
+
+@app.get("/api/swaps/{swap_id}")
+def swap_detail_api(swap_id: int):
+    c = connect(); detail = get_swap_detail(c, swap_id); c.close()
+    if detail is None:
+        raise HTTPException(404, "swap_not_found")
+    return detail
 
 @app.post("/api/swaps/{swap_id}/confirm")
 def confirm_swap(swap_id: int):
@@ -108,11 +117,25 @@ def confirm_swap(swap_id: int):
         new_slots = apply_swap(slots, sw["a_day"], sw["a_task"], sw["b_day"], sw["b_task"])
     except ValueError as e:
         c.close(); raise HTTPException(400, str(e))
+    sa = find_slot(slots, sw["a_day"], sw["a_task"])
+    sb = find_slot(slots, sw["b_day"], sw["b_task"])
     for a, s in zip(assigns, new_slots):
         c.execute("UPDATE assignments SET member_id=? WHERE id=?", (s["member_id"], a["id"]))
-    c.execute("UPDATE swap_requests SET status='confirmed' WHERE id=?", (swap_id,))
+    c.execute(
+        "UPDATE swap_requests SET status='confirmed', a_member=?, b_member=? WHERE id=?",
+        (sa["member_id"], sb["member_id"], swap_id))
     c.commit(); c.close()
-    return {"ok": True, "swap_id": swap_id}
+    return {"ok": True, "swap_id": swap_id, "a_member": sa["member_id"], "b_member": sb["member_id"]}
+
+@app.post("/api/swaps/{swap_id}/revoke")
+def revoke_swap_api(swap_id: int):
+    c = connect()
+    try:
+        result = revoke_swap(c, swap_id)
+    except RevokeError as e:
+        c.close(); raise HTTPException(e.http_status, e.reason)
+    c.commit(); c.close()
+    return result
 
 @app.get("/api/settings")
 def get_settings():

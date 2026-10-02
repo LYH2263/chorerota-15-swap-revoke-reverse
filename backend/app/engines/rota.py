@@ -14,14 +14,16 @@ def build_week_slots(member_ids: list[int], task_ids: list[int], days: int = 7) 
     return slots
 
 
+def find_slot(slots: list[dict], day: int, task: int):
+    for s in slots:
+        if s["day"] == day and s["task_id"] == task:
+            return s
+    return None
+
+
 def swap_legal(slots: list[dict], a_day: int, a_task: int, b_day: int, b_task: int) -> dict:
     """Two slots may swap only if both exist, different assignees, same week grid."""
-    def find(day, task):
-        for s in slots:
-            if s["day"] == day and s["task_id"] == task:
-                return s
-        return None
-    sa, sb = find(a_day, a_task), find(b_day, b_task)
+    sa, sb = find_slot(slots, a_day, a_task), find_slot(slots, b_day, b_task)
     if sa is None or sb is None:
         return {"ok": False, "reason": "slot_missing"}
     if sa["member_id"] == sb["member_id"]:
