@@ -5,6 +5,8 @@ from pydantic import BaseModel
 from app import seed
 from app.db import connect
 from app.engines.rota import build_week_slots, swap_legal, apply_swap
+from app.revoke_store import revoke_swap, RevokeError
+from app.swap_queries import list_swaps as query_swaps, get_swap_detail
 
 app = FastAPI(title="Chorerota", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -91,8 +93,14 @@ def request_swap(week_id: int, body: SwapBody):
     return {"id": sid, "status": "pending", **check}
 
 @app.get("/api/swaps")
-def list_swaps():
-    c = connect(); rows = [dict(r) for r in c.execute("SELECT * FROM swap_requests ORDER BY id DESC")]; c.close(); return rows
+def list_swaps(include_revoked: int = 0):
+    c = connect(); rows = query_swaps(c, include_revoked=bool(include_revoked)); c.close(); return rows
+
+@app.get("/api/swaps/{swap_id}")
+def swap_detail(swap_id: int):
+    c = connect(); d = get_swap_detail(c, swap_id); c.close()
+    if not d: raise HTTPException(404, "swap_not_found")
+    return d
 
 @app.post("/api/swaps/{swap_id}/confirm")
 def confirm_swap(swap_id: int):
@@ -110,9 +118,25 @@ def confirm_swap(swap_id: int):
         c.close(); raise HTTPException(400, str(e))
     for a, s in zip(assigns, new_slots):
         c.execute("UPDATE assignments SET member_id=? WHERE id=?", (s["member_id"], a["id"]))
-    c.execute("UPDATE swap_requests SET status='confirmed' WHERE id=?", (swap_id,))
+    seq = c.execute("SELECT COALESCE(MAX(confirmed_seq),0)+1 AS s FROM swap_requests").fetchone()["s"]
+    c.execute("UPDATE swap_requests SET status='confirmed', confirmed_seq=? WHERE id=?", (seq, swap_id))
     c.commit(); c.close()
     return {"ok": True, "swap_id": swap_id}
+
+@app.post("/api/swaps/{swap_id}/revoke")
+def revoke_swap_route(swap_id: int):
+    c = connect()
+    try:
+        result = revoke_swap(c, swap_id)
+    except RevokeError as e:
+        c.close()
+        if e.code == "swap_not_found":
+            raise HTTPException(404, e.code)
+        if e.code.startswith("slot_touched"):
+            raise HTTPException(409, e.code)
+        raise HTTPException(400, e.code)
+    c.close()
+    return result
 
 @app.get("/api/settings")
 def get_settings():

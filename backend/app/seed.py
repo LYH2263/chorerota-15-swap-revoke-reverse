@@ -7,9 +7,16 @@ def init_db():
     CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY, title TEXT, weight INT, data_quality TEXT);
     CREATE TABLE IF NOT EXISTS weeks(id INTEGER PRIMARY KEY, label TEXT, status TEXT);
     CREATE TABLE IF NOT EXISTS assignments(id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INT, day INT, task_id INT, member_id INT);
-    CREATE TABLE IF NOT EXISTS swap_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INT, a_day INT, a_task INT, b_day INT, b_task INT, status TEXT, note TEXT);
+    CREATE TABLE IF NOT EXISTS swap_requests(id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INT, a_day INT, a_task INT, b_day INT, b_task INT, status TEXT, note TEXT, confirmed_seq INT);
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
     """)
+    # migration: confirmed_seq orders confirmations so revoke can detect
+    # whether a later confirmed swap touched the same slot
+    cols = [r["name"] for r in c.execute("PRAGMA table_info(swap_requests)")]
+    if "confirmed_seq" not in cols:
+        c.execute("ALTER TABLE swap_requests ADD COLUMN confirmed_seq INT")
+        c.execute("UPDATE swap_requests SET confirmed_seq=id WHERE status='confirmed'")
+        c.commit()
     if c.execute("SELECT COUNT(*) c FROM members").fetchone()["c"] == 0:
         c.executemany("INSERT INTO members(name,active,data_quality) VALUES (?,?,?)", [
             ("阿明", 1, "clean"), ("小雨", 1, "clean"), ("爷爷", 1, "clean"),
